@@ -1,135 +1,321 @@
-import {tau,rcStep,rcSineStep,filterResponse,diodeModel,bjtModel,checkWiring,seriesWires,transistorWires} from './physics.js';
-const $ = id => document.getElementById(id);
-const ns = 'http://www.w3.org/2000/svg';
-const lessons = [
-  {id:'rc', name:'電容的時間感', tag:'01 / RC TRANSIENT', subtitle:'把充電變慢，再讓它沿著同一條路放電。', short:'充放電 · 時間常數', mission:'把時間常數調到 1 秒（±10%），充到 90% 以上，再切換放電，降到 20% 以下。', hint:'電源 + → R 左端；R 右端 → C 上端；C 下端 → 電源 −。τ = R × C；10 kΩ 搭配 100 μF 就是 1 秒。'},
-  {id:'filter',name:'把快變化留下來？',tag:'02 / RC LOW-PASS',subtitle:'同一組 R 和 C，換成交流訊號，就變成濾波器。',short:'低通濾波 · 截止頻率',mission:'接好電路，分別讓 f = 0.1 × fc 與 f = 10 × fc，運行並比較輸出。兩次都試過就完成。',hint:'接法與前關相同，輸出量在 C 兩端。頻率選擇器可以直接切換 0.1 × fc 與 10 × fc。觀察綠色波形的振幅與延遲。'},
-  {id:'diode',name:'單行道的代價',tag:'03 / DIODE',subtitle:'方向對了也不代表沒有壓降。試著翻轉它。',short:'正反向 · 固定壓降模型',mission:'接好電路，在 5 V、1 kΩ 下觀察正向電流，再翻轉二極體，觀察反向截止。',hint:'電源 + → R → 二極體 A（陽極）；K（陰極，橫線端）→ 電源 −。先開始觀察，再按「翻轉二極體」。'},
-  {id:'bjt',name:'小電流，大控制',tag:'04 / NPN TRANSISTOR',subtitle:'從截止、放大區，走到飽和。負載也有自己的限制。',short:'截止 · 放大 · 飽和',mission:'接好 NPN 電路，把控制輸入調到 0 V 觀察截止，再調高輸入或降低 RB，讓它進入飽和。',hint:'VCC + → RC → C；控制輸入 → RB → B；E → 地。NPN 的 B 是基極、C 是集極、E 是射極；兩個電源共地。'}
-];
-let completed = new Set();
-try { const saved = JSON.parse(localStorage.getItem('basic-ee-progress-v1') || '[]'); if(Array.isArray(saved)) completed = new Set(saved.filter(id=>lessons.some(l=>l.id===id))); } catch {}
-let active=0, wires=[], selected=null, running=false, t=0, voltage=0, samples=[], seen={}, lastTime=null;
-let values={}, ports={}, wiring={}, hintCount=0;
-const fmt=(n,d=2)=>Number(n).toFixed(d);
-function el(tag,attrs={},text) { const node=document.createElementNS(ns,tag); for(const [key,v] of Object.entries(attrs)) node.setAttribute(key,v); if(text!==undefined)node.textContent=text; return node; }
-function defaults(id){return id==='bjt'?{vcc:5,vin:0,rb:47,rc:1,beta:100}:id==='diode'?{supply:5,r:1,reverse:false}:{supply:5,r:10,c:47,mode:'charge',ratio:1,speed:1};}
-function saveProgress(){try{localStorage.setItem('basic-ee-progress-v1',JSON.stringify([...completed]));}catch{ $('progress-label').title='瀏覽器未允許儲存，進度僅保留在本次開啟。';}}
-function navigation(){
-  $('lessons').replaceChildren(); lessons.forEach((l,i)=>{const b=document.createElement('button');b.className='lesson-button'+(i===active?' active':'');b.setAttribute('aria-current',i===active?'step':'false');b.innerHTML=`<span class="lesson-number">${String(i+1).padStart(2,'0')}</span><span><strong>${l.name}</strong><small>${l.short}</small></span>${completed.has(l.id)?'<span class="completed" aria-label="已完成">✓</span>':''}`;b.onclick=()=>loadLesson(i);$('lessons').append(b);});
-  $('progress-label').textContent=`${completed.size} / 4 個實驗完成`;$('progress-bar').style.width=`${completed.size/4*100}%`;
-  const done=completed.has(lessons[active].id);$('mission-status').textContent=done?'✓ 已完成':'還沒完成';$('mission-status').className='pill'+(done?' done':'');
+import { lessons, byId } from './lessons/index.js';
+import { glossary } from './glossary.js';
+
+const $ = sel => document.querySelector(sel);
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+
+// ---------- 進度儲存 ----------
+const STORE = 'basic-ee-progress-v2';
+let progress = {};
+try { progress = JSON.parse(localStorage.getItem(STORE) || '{}') || {}; } catch { progress = {}; }
+function lessonProgress(id) {
+  if (!progress[id]) progress[id] = { steps: [], quiz: {}, visited: false };
+  return progress[id];
 }
-function complete(){if(!completed.has(lessons[active].id)){completed.add(lessons[active].id);saveProgress();navigation();}}
-function loadLesson(i){
-  active=i;wires=[];selected=null;running=false;t=0;voltage=0;samples=[];seen={};lastTime=null;hintCount=0;values=defaults(lessons[i].id);
-  const l=lessons[i];$('lesson-tag').textContent=l.tag;$('lesson-title').textContent=l.name;$('lesson-subtitle').textContent=l.subtitle;$('mission-text').textContent=l.mission;$('chapter-mark').textContent=String(i+1).padStart(2,'0');$('hint-text').hidden=true;
-  navigation();controls();board();update();
+function save() { try { localStorage.setItem(STORE, JSON.stringify(progress)); } catch { /* 無法儲存時忽略 */ } }
+function lessonStatus(l) {
+  const p = lessonProgress(l.id);
+  const stepsDone = p.steps.length, stepsTotal = l.steps.length;
+  const answered = Object.keys(p.quiz).length, correct = l.quiz.filter((q, i) => p.quiz[i] === q.answer).length;
+  const done = stepsDone === stepsTotal && answered === l.quiz.length;
+  return { stepsDone, stepsTotal, answered, correct, quizTotal: l.quiz.length, done, visited: p.visited };
 }
-function labelControl(label,key,min,max,step,format){
-  const wrap=document.createElement('div'), row=document.createElement('label'), output=document.createElement('span'), input=document.createElement('input');
-  row.className='control-label';row.htmlFor='knob-'+key;row.textContent=label;output.className='control-value';output.textContent=format(values[key]);row.append(output);
-  input.type='range';input.id='knob-'+key;input.min=min;input.max=max;input.step=step;input.value=values[key];
-  input.oninput=()=>{values[key]=+input.value;output.textContent=format(values[key]);if(key==='r'||key==='c'||key==='ratio')samples=[];board();update();};wrap.append(row,input);$('controls').append(wrap);
+
+// ---------- 路由 ----------
+function route() {
+  const hash = location.hash.replace(/^#\/?/, '');
+  const [page, id] = hash.split('/');
+  stopSim();
+  if (page === 'lesson' && byId[id]) renderLesson(byId[id]);
+  else if (page === 'glossary') renderGlossary();
+  else renderHome();
+  renderNav();
+  window.scrollTo(0, 0);
 }
-function selectControl(label,key,options){const wrap=document.createElement('div'),lab=document.createElement('label'),input=document.createElement('select');lab.className='control-label';lab.htmlFor='knob-'+key;lab.textContent=label;input.id='knob-'+key;for(const [val,text] of options){const opt=document.createElement('option');opt.value=val;opt.textContent=text;input.append(opt);}input.value=values[key];input.onchange=()=>{values[key]=key==='mode'?input.value:+input.value;samples=[];board();update();};wrap.append(lab,input);$('controls').append(wrap);}
-function controls(){
-  const id=lessons[active].id;$('controls').replaceChildren();
-  if(id==='bjt'){
-    labelControl('控制輸入 Vin','vin',0,5,.05,n=>`${fmt(n)} V`);labelControl('基極電阻 RB','rb',1,100,1,n=>`${n} kΩ`);labelControl('負載電阻 RC','rc',.2,5,.1,n=>`${fmt(n,1)} kΩ`);labelControl('假設電流增益 β','beta',20,200,10,n=>String(n));
-  } else {
-    labelControl(id==='filter'?'輸入峰值':'電源電壓','supply',1,10,.5,n=>`${fmt(n,1)} V`);labelControl('電阻 R','r',id==='diode'?.2:1,id==='diode'?10:100,id==='diode'?.1:1,n=>`${fmt(n,1)} kΩ`);
-    if(id==='diode'){const b=document.createElement('button');b.className='secondary';b.id='flip';b.textContent='⇄ 翻轉二極體';b.onclick=()=>{values.reverse=!values.reverse;board();update();};$('controls').append(b);}else{labelControl('電容 C','c',10,220,1,n=>`${n} μF`);if(id==='rc'){selectControl('電源切換','mode',[['charge','充電：接到電源'],['discharge','放電：輸入切到 0 V']]);selectControl('模擬速度','speed',[[.25,'0.25× 慢速'],[1,'1× 即時'],[5,'5× 快轉']]);}else selectControl('訊號頻率','ratio',[[.1,'0.1 × fc：慢變化'],[1,'1 × fc：截止頻率'],[10,'10 × fc：快變化']]);}
+window.addEventListener('hashchange', route);
+
+// ---------- 側邊欄 ----------
+function renderNav() {
+  const hash = location.hash;
+  const items = lessons.map((l, i) => {
+    const s = lessonStatus(l);
+    const active = hash === `#/lesson/${l.id}`;
+    const pct = Math.round((s.stepsDone + s.answered) / (s.stepsTotal + s.quizTotal) * 100);
+    return `<a class="nav-item${active ? ' active' : ''}${s.done ? ' done' : ''}" href="#/lesson/${l.id}">
+      <span class="nav-num">${s.done ? '✓' : i + 1}</span>
+      <span class="nav-text"><strong>${esc(l.title)}</strong><small>${s.visited ? `${pct}%` : `${l.minutes} 分鐘`}</small></span></a>`;
+  }).join('');
+  const doneCount = lessons.filter(l => lessonStatus(l).done).length;
+  $('#nav').innerHTML = `
+    <a class="nav-item${hash === '' || hash === '#/' ? ' active' : ''}" href="#/"><span class="nav-num">⌂</span><span class="nav-text"><strong>開始與使用說明</strong></span></a>
+    ${items}
+    <a class="nav-item${hash === '#/glossary' ? ' active' : ''}" href="#/glossary"><span class="nav-num">?</span><span class="nav-text"><strong>名詞小抄</strong></span></a>
+    <div class="nav-progress"><div class="bar"><i style="width:${doneCount / lessons.length * 100}%"></i></div><small>${doneCount} / ${lessons.length} 課完成 · 進度存在這台裝置</small></div>`;
+}
+
+// ---------- 首頁 ----------
+function renderHome() {
+  document.title = 'Basic EE · 基礎電子學自學';
+  const cards = lessons.map((l, i) => {
+    const s = lessonStatus(l);
+    return `<a class="card lesson-card" href="#/lesson/${l.id}">
+      <div class="card-num">第 ${i + 1} 課 · 約 ${l.minutes} 分鐘</div>
+      <h3>${esc(l.title)}</h3><p>${esc(l.tagline)}</p>
+      <div class="card-foot">${s.done ? '<span class="pill done">已完成</span>' : s.visited ? `<span class="pill">進行中 · 步驟 ${s.stepsDone}/${s.stepsTotal} · 測驗 ${s.answered}/${s.quizTotal}</span>` : '<span class="pill">尚未開始</span>'}</div></a>`;
+  }).join('');
+  $('#main').innerHTML = `
+  <section class="hero">
+    <div class="eyebrow">基礎電子學 · 自學課程</div>
+    <h1>先懂原理，再動手調，<br>每一步都知道自己在看什麼。</h1>
+    <p class="lead">這套課程假設你已經懂電壓、電流、串聯與並聯。六課帶你從歐姆定律走到電晶體開關，每一課都是同一個節奏：<strong>為什麼要學 → 概念講解 → 跟著步驟做實驗 → 自我檢測 → 重點整理</strong>。</p>
+  </section>
+  <section class="howto">
+    <h2>這個網站怎麼用</h2>
+    <div class="howto-grid">
+      <div class="card"><div class="step-badge">1</div><h3>先讀概念</h3><p>每課開頭用生活比喻和一兩條公式把原理講清楚。不用背，看懂方向就好，實驗會把它變成直覺。</p></div>
+      <div class="card"><div class="step-badge">2</div><h3>跟著步驟做</h3><p>實驗區的電路已經接好。「導引步驟」會告訴你<strong>調哪個旋鈕、會看到什麼、為什麼</strong>。按「幫我設定」可以直接套用該步驟的數值，達成條件時會自動打勾。</p></div>
+      <div class="card"><div class="step-badge">3</div><h3>讀「正在發生的事」</h3><p>每次調整旋鈕，電路圖、讀數和圖表都會即時更新，旁邊會用一句話解釋現在的狀態。看不懂圖表時，圖下方有說明。</p></div>
+      <div class="card"><div class="step-badge">4</div><h3>做測驗、看整理</h3><p>每課結尾有 3～4 題選擇題，答錯會立刻告訴你為什麼。最後的重點整理與常見誤解，是給你複習用的。</p></div>
+    </div>
+  </section>
+  <section><h2>課程地圖</h2><div class="cards">${cards}</div></section>
+  <section class="about card muted">
+    <h3>關於模擬的誠實說明</h3>
+    <p>這裡的電路是<strong>教學模型</strong>：理想電阻、理想電容、固定壓降的二極體、固定 β 的電晶體。它們能準確呈現原理與數量級，但不取代真實元件的資料表，也不是通用的電路模擬器。每一課的「概念」段落會說明該模型省略了什麼。</p>
+  </section>`;
+}
+
+// ---------- 名詞小抄 ----------
+function renderGlossary() {
+  document.title = '名詞小抄 · Basic EE';
+  $('#main').innerHTML = `<section class="hero compact"><div class="eyebrow">隨時查</div><h1>名詞小抄</h1><p class="lead">課程裡出現的詞，各用一兩句話說清楚。</p></section>
+  <dl class="glossary">${glossary.map(g => `<div class="gl-item"><dt>${esc(g.term)}</dt><dd>${esc(g.text)}</dd></div>`).join('')}</dl>`;
+}
+
+// ---------- 課程頁 ----------
+let lesson = null, values = {}, simState = null, running = false, rafId = null, lastTime = null, stepIndex = 0, revealed = false;
+
+function stopSim() { running = false; if (rafId) cancelAnimationFrame(rafId); rafId = null; lastTime = null; }
+
+function renderLesson(l) {
+  lesson = l;
+  document.title = `${l.title} · Basic EE`;
+  const p = lessonProgress(l.id); p.visited = true; save();
+  values = { ...l.defaults };
+  simState = l.timeBased ? l.timeBased.init(values) : null;
+  // 從第一個未完成的步驟開始
+  stepIndex = l.steps.findIndex((s, i) => !p.steps.includes(i)); if (stepIndex < 0) stepIndex = 0;
+  revealed = p.steps.includes(stepIndex);
+  const idx = lessons.indexOf(l), next = lessons[idx + 1], prev = lessons[idx - 1];
+
+  $('#main').innerHTML = `
+  <article class="lesson">
+    <header class="lesson-head">
+      <div class="eyebrow">第 ${idx + 1} 課 · 約 ${l.minutes} 分鐘</div>
+      <h1>${esc(l.title)}</h1>
+      <p class="lead">${esc(l.tagline)}</p>
+      <nav class="section-nav" aria-label="本課段落">
+        <a href="#why">1 為什麼</a><a href="#concepts">2 概念</a><a href="#lab">3 動手做</a><a href="#quiz">4 自我檢測</a><a href="#summary">5 重點整理</a>
+      </nav>
+    </header>
+
+    <section id="why" class="block">
+      <h2><span class="num">1</span>為什麼要學這個</h2>
+      <div class="prose">${l.intro.why}</div>
+      <div class="goals"><strong>學完這課你會：</strong><ul>${l.intro.goals.map(g => `<li>${esc(g)}</li>`).join('')}</ul></div>
+    </section>
+
+    <section id="concepts" class="block">
+      <h2><span class="num">2</span>概念講解</h2>
+      ${l.concepts.map((c, i) => `<div class="concept"><h3>${esc(c.heading)}</h3><div class="prose">${c.html}</div></div>`).join('')}
+      <p class="cta">讀完了？往下，把這些概念親手調出來。</p>
+    </section>
+
+    <section id="lab" class="block lab">
+      <h2><span class="num">3</span>動手做：導引實驗</h2>
+      <p class="lab-intro">電路已經接好了。左邊的「導引步驟」告訴你做什麼、看什麼；右邊是電路圖與圖表，會隨著旋鈕即時更新。</p>
+      <div class="lab-grid">
+        <div class="lab-left">
+          <div id="step-card" class="step-card"></div>
+          <div class="panel">
+            <div class="panel-head"><h3>旋鈕</h3>${l.timeBased ? '<div class="transport"><button id="run" class="btn primary">▶ 開始</button><button id="restart" class="btn">↺ 重來</button></div>' : ''}</div>
+            <div id="controls" class="controls"></div>
+          </div>
+          <div class="panel"><div class="panel-head"><h3>讀數</h3></div><div id="readouts" class="readouts"></div></div>
+        </div>
+        <div class="lab-right">
+          <div class="panel"><div class="panel-head"><h3>電路</h3></div><div id="schematic" class="schematic-wrap"></div>
+            <div class="caption-box"><div class="eyebrow">正在發生的事</div><p id="caption"></p></div></div>
+          <div class="panel"><div class="panel-head"><h3>圖表</h3></div><div id="chart" class="chart-wrap"></div><p class="chart-caption">${esc(l.chartCaption || '')}</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="quiz" class="block">
+      <h2><span class="num">4</span>自我檢測</h2>
+      <p class="lab-intro">選一個答案，馬上看解釋。答錯沒關係，解釋才是重點。</p>
+      <div id="quiz-list"></div>
+    </section>
+
+    <section id="summary" class="block">
+      <h2><span class="num">5</span>重點整理</h2>
+      <ul class="summary">${l.summary.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      <h3>常見誤解</h3>
+      <div class="myths">${l.misconceptions.map(m => `<div class="myth"><div class="myth-no">✗ ${esc(m.myth)}</div><div class="myth-yes">✓ ${esc(m.truth)}</div></div>`).join('')}</div>
+      <div class="lesson-foot">
+        ${prev ? `<a class="btn" href="#/lesson/${prev.id}">← 上一課：${esc(prev.title)}</a>` : '<a class="btn" href="#/">← 回首頁</a>'}
+        ${next ? `<a class="btn primary" href="#/lesson/${next.id}">下一課：${esc(next.title)} →</a>` : '<a class="btn primary" href="#/">全部完成，回首頁 →</a>'}
+      </div>
+    </section>
+  </article>`;
+
+  buildControls();
+  if (l.timeBased) {
+    $('#run').onclick = () => { running = !running; lastTime = null; if (running) loop(); updateTransport(); };
+    $('#restart').onclick = () => { stopSim(); simState = l.timeBased.init(values); updateTransport(); renderDynamic(); };
   }
-  $('control-note').textContent=id==='rc'?'放電會將電源輸入切至 0 V，電容經 R 放電。切換時保留電容電壓。':id==='filter'?'橘線是輸入；綠線是電容兩端的輸出。頻率依目前 R、C 計算。':id==='diode'?'使用 0.7 V 固定壓降模型；反向漏電與崩潰不在本關範圍。':'VCC 固定 5 V，兩電源共地。β 可調；用固定 VBE、VCE(sat) 近似。';
+  renderQuiz();
+  renderDynamic();
 }
-function board(){
-  const id=lessons[active].id,svg=$('board');svg.replaceChildren();ports={};
-  const box=(x,y,w,h,title,sub)=>{svg.append(el('rect',{x,y,width:w,height:h,rx:14,class:'component-box'}),el('text',{x:x+w/2,y:y+25,'text-anchor':'middle',class:'component-title'},title),el('text',{x:x+w/2,y:y+h-13,'text-anchor':'middle',class:'component-sub'},sub));};
-  const path=d=>svg.append(el('path',{d,class:'symbol'}));
-  const port=(key,x,y,label)=>{ports[key]={x,y};const g=el('g',{class:'terminal'+(selected===key?' selected':''),tabindex:0,role:'button','aria-label':label,'data-port':key});g.append(el('circle',{cx:x,cy:y,r:18,fill:'transparent',stroke:'none',opacity:0}),el('circle',{cx:x,cy:y,r:7}),el('text',{x:x+13,y:y+4},label));g.onclick=()=>connect(key);g.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();connect(key);}};svg.append(g);};
-  if(id==='bjt'){
-    box(20,25,105,112,'VCC','5 V');path('M64 69h22 M69 79h12');port('p',124,70,'+');port('n',72,137,'GND');
-    box(245,25,145,100,'RC',`${fmt(values.rc,1)} kΩ`);path('M270 75h8l6 -8 10 16 10 -16 10 16 10 -16 10 16 6 -8h8');port('r1',245,75,'1');port('r2',390,75,'2');
-    box(20,200,110,105,'控制輸入',`${fmt(values.vin)} V`);path('M53 250h12v-14h18v14h18');port('in',130,250,'Vin');
-    box(245,200,145,105,'RB',`${values.rb} kΩ`);path('M270 250h8l6 -8 10 16 10 -16 10 16 10 -16 10 16 6 -8h8');port('b1',245,250,'1');port('b2',390,250,'2');
-    box(478,115,130,150,'NPN',`β = ${values.beta}`);path('M511 190h18 M529 170v40 M529 182l32 -24 M529 198l32 24 M561 158v-43 M561 222v43 M548 207l-1 10 10 -1');port('qb',478,190,'B');port('qc',561,115,'C');port('qe',561,265,'E');
-  }else{
-    box(22,70,110,178,id==='filter'?'訊號源':'電源',id==='filter'?'正弦波':id==='rc'&&values.mode==='discharge'?'0 V / 放電':`${fmt(values.supply,1)} V`);path(id==='filter'?'M47 150q15 -35 30 0t30 0':'M59 139h33 M67 152h17');port('p',132,116,'+');port('n',132,206,'−');
-    box(246,57,155,118,'電阻 R',`${fmt(values.r,1)} kΩ`);path('M263 116h16l7 -9 10 18 10 -18 10 18 10 -18 10 18 7 -9h14');port('r1',246,116,'1');port('r2',401,116,'2');
-    if(id==='diode'){
-      box(495,63,123,180,'二極體',values.reverse?'K ← A':'A → K');path(values.reverse?'M557 116v20 M538 136h38 M557 159l-18 -23h36z M557 159v47':'M557 116v20 M539 136h36l-18 23z M538 159h38 M557 159v47');port('x1',557,63,values.reverse?'K':'A');port('x2',557,243,values.reverse?'A':'K');
-    }else{
-      box(495,63,123,180,'電容 C',`${values.c} μF`);path('M557 63v74 M533 137h48 M533 153h48 M557 153v90');port('x1',557,63,'上');port('x2',557,243,'下');svg.append(el('text',{x:460,y:294,class:'component-sub'},'輸出：量 C 兩端的電壓'));
+
+function updateTransport() { const b = $('#run'); if (b) b.textContent = running ? 'Ⅱ 暫停' : '▶ 開始'; }
+
+function loop() {
+  if (!running || !lesson?.timeBased) return;
+  rafId = requestAnimationFrame(now => {
+    const dt = lastTime === null ? 0 : Math.min((now - lastTime) / 1000, 0.1);
+    lastTime = now;
+    if (dt > 0) lesson.timeBased.tick(simState, values, dt);
+    renderDynamic();
+    loop();
+  });
+}
+
+// ---------- 旋鈕 ----------
+const SLIDER_MAX = 1000;
+const toPos = (c, v) => c.log ? Math.round(Math.log(v / c.min) / Math.log(c.max / c.min) * SLIDER_MAX) : v;
+const fromPos = (c, pos) => c.log ? c.min * (c.max / c.min) ** (pos / SLIDER_MAX) : +pos;
+// 對數滑桿吸附到常見的「漂亮」數值（1、1.5、2.2、3.3、4.7、6.8 系列）
+const snap = v => { const e = 10 ** Math.floor(Math.log10(v)); const m = v / e; const nice = [1, 1.2, 1.5, 1.8, 2, 2.2, 2.7, 3, 3.3, 3.9, 4.7, 5, 5.6, 6.8, 8.2, 10]; return nice.reduce((a, b) => Math.abs(b - m) < Math.abs(a - m) ? b : a) * e; };
+
+function buildControls() {
+  const box = $('#controls'); box.innerHTML = '';
+  for (const c of lesson.controls) {
+    const wrap = document.createElement('div'); wrap.className = 'control';
+    if (c.type === 'range') {
+      wrap.innerHTML = `<label for="k-${c.key}"><span>${esc(c.label)}</span><output id="o-${c.key}"></output></label><input type="range" id="k-${c.key}" min="${c.log ? 0 : c.min}" max="${c.log ? SLIDER_MAX : c.max}" step="${c.log ? 1 : c.step}">`;
+      const input = wrap.querySelector('input');
+      input.value = toPos(c, values[c.key]);
+      input.oninput = () => {
+        let v = fromPos(c, input.value); if (c.log) v = snap(v);
+        setValue(c.key, v);
+      };
+    } else {
+      wrap.innerHTML = `<label for="k-${c.key}"><span>${esc(c.label)}</span></label><select id="k-${c.key}">${c.options.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select>`;
+      const sel = wrap.querySelector('select');
+      sel.value = String(values[c.key]);
+      sel.onchange = () => { const raw = sel.value; const n = Number(raw); setValue(c.key, raw !== '' && !Number.isNaN(n) ? n : raw); };
     }
+    box.append(wrap);
   }
-  const wireLayer=el('g',{'aria-label':'電線'});svg.insertBefore(wireLayer,svg.firstChild);
-  wires.forEach(([a,b],i)=>{const A=ports[a],B=ports[b];if(!A||!B)return;let bend=(A.y+B.y)/2;const d=`M${A.x} ${A.y} C${A.x} ${bend},${B.x} ${bend},${B.x} ${B.y}`;const wire=el('path',{d,class:'wire',tabindex:0,role:'button','aria-label':`刪除電線 ${a} 至 ${b}`});wire.onclick=()=>removeWire(i);wire.onkeydown=e=>{if(['Enter',' ','Delete','Backspace'].includes(e.key)){e.preventDefault();removeWire(i);}};wireLayer.append(wire);if(running&&wiring.valid)wireLayer.append(el('path',{d,class:'wire-flow'}));});
+  syncControls();
 }
-function connect(key){if(selected===null){selected=key;}else if(selected===key){selected=null;}else{if(!wires.some(([a,b])=>(a===selected&&b===key)||(a===key&&b===selected)))wires.push([selected,key]);selected=null;samples=[];}validate();board();update();}
-function removeWire(i){wires.splice(i,1);samples=[];validate();board();update();}
-function validate(){wiring=checkWiring(lessons[active].id==='bjt'?'bjt':lessons[active].id==='diode'?'diode':'rc',wires);if(!wiring.valid)running=false;}
-function status(){validate();$('wiring-status').textContent=selected?`已選取接點 ${selected}。再選一個接點完成連線。`:wiring.message;$('wiring-status').className='status '+(wiring.valid?'good':wires.length?'error':'');$('run').disabled=!wiring.valid;$('run').textContent=running?'Ⅱ 暫停':'▶ 開始實驗';$('undo').disabled=wires.length===0;$('clear').disabled=wires.length===0;}
-function diode(){return diodeModel(values.supply,values.r*1000,!!values.reverse!==!!wiring.reversed);}
-function bjt(){return bjtModel(values.vcc,values.vin,values.rb*1000,values.rc*1000,values.beta);}
-function metrics(){
-  const id=lessons[active].id;let items;
-  if(id==='rc')items=[['電容電壓',fmt(voltage),'V'],['時間常數 τ',fmt(tau(values.r*1000,values.c*1e-6)),'s'],['電阻電流',wiring.valid?fmt(((values.mode==='charge'?values.supply:0)-voltage)/values.r):'—','mA']];
-  else if(id==='filter'){const a=filterResponse(values.r*1000,values.c*1e-6,values.ratio/(2*Math.PI*values.r*1000*values.c*1e-6));items=[['截止頻率 fc',fmt(a.cutoff),'Hz'],['穩態振幅比',fmt(a.gain*100,1),'%'],['穩態相位差',fmt(a.phase,1),'°']];}
-  else if(id==='diode'){const a=diode();items=[['迴路電流',wiring.valid?fmt(a.current*1000):'—','mA'],['二極體壓降 VA−VK',wiring.valid?fmt((!!values.reverse!==!!wiring.reversed)?-a.voltage:a.voltage):'—','V'],['電阻功率',wiring.valid?fmt(a.current*a.current*values.r*1e6,1):'—','mW']];}
-  else{const a=bjt();items=[['基極電流 IB',wiring.valid?fmt(a.ib*1e6,1):'—','μA'],['集極電流 IC',wiring.valid?fmt(a.ic*1000):'—','mA'],['集射極電壓 VCE',wiring.valid?fmt(a.vce):'—','V']];}
-  $('readouts').innerHTML=items.map(([label,num,unit])=>`<div class="readout"><small>${label}</small><strong>${num}<em>${unit}</em></strong></div>`).join('');
+function setValue(key, v) {
+  values[key] = v;
+  const tb = lesson.timeBased;
+  if (tb && tb.resetOn?.includes(key) && simState) { simState.samples = []; simState.t = 0; }
+  syncControls(); renderDynamic();
 }
-function insight(){
-  const id=lessons[active].id;let title,text,theory;
-  if(id==='rc'){
-    title=values.mode==='charge'?'一開始快，後來慢。':'電源歸零，電容還有記憶。';
-    text=values.mode==='charge'?'電容電壓越接近電源，電阻兩端的壓差越小，充電電流也越小。經過一個 τ，會完成剩餘電壓差的約 63.2%。':'切到 0 V 後，電容經過電阻放電。這不是「拔掉電源」：若只是斷路，理想電容會保留電荷。負電流代表方向和充電相反。';
-    theory='<code>τ = R × C\nVC(t+Δt) = Vin + (VC(t)−Vin)e^(−Δt/τ)\nIR = (Vin−VC)/R</code>理想電阻、非極性電容與理想電源。接線斷開時保留電容電壓；重來才會把它歸零。電容切換電源時，電壓連續。<a href="https://openstax.org/books/university-physics-volume-2/pages/10-5-rc-circuits" target="_blank" rel="noopener">延伸閱讀：OpenStax · RC circuits ↗</a>';
-  }else if(id==='filter'){
-    title=values.ratio<1?'慢變化，幾乎跟得上。':values.ratio>1?'太快的變化，被壓小了。':'在截止頻率，振幅剩 70.7%。';text='電容電壓無法瞬間跳變。頻率越高，輸出越跟不上輸入，振幅下降、相位落後。這是低通：保留慢變化，削弱快變化。示波器含啟動暫態；下方數值是穩態理論值。';
-    theory='<code>fc = 1 / (2πRC)\n|H(f)| = 1 / √(1+(f/fc)²)\nφ = −atan(f/fc)\ndVC/dt = (Vin−VC)/RC</code>正弦波輸入、理想非極性電容、輸出無負載。使用一階 RC 微分方程的精確區間解；切換頻率時保留電容電壓。這裡不是使用有極性的電解電容。';
-  }else if(id==='diode'){
-    const a=diode();title=a.conducting?'導通，也要付出壓降。':'方向反了，這條路走不通。';text='這個簡化矽二極體會在正向超過 0.7 V 時導通。其餘電壓落在電阻上。翻轉方向後，反向電流設為零。真實壓降會隨電流、溫度與元件改變。';theory='<code>IF = max((VFsource−0.7)/R, 0)\nPR = I²R</code>固定壓降教學模型，不是特定 1N4148 的準確曲線。忽略反向漏電、反向崩潰、結電容與切換時間。示波器綠線是串聯電阻後的節點對地電壓；壓降讀值是 VA−VK。<a href="https://www.vishay.com/docs/81857/1n4148.pdf" target="_blank" rel="noopener">對照真實元件：Vishay 1N4148 資料表 ↗</a>';
-  }else{
-    const a=bjt();title={cutoff:'截止：控制電流是零。',active:'放大區：IC 跟著 IB 走。',saturation:'飽和：負載限制了電流。'}[a.state];text=a.state==='saturation'?'基極電流再增大，集極電流也不會一直乘上 β。電源與 RC 決定了可提供的電流。想當開關用，就要理解這個限制。':'把 Vin 慢慢調高，先跨過基射極的壓降，再建立基極電流。這時 IC 約為 β × IB，直到負載所允許的上限。';theory='<code>IB = max((Vin−0.7)/RB, 0)\nIC = min(βIB, (VCC−0.2)/RC)\nVCE = VCC−IC×RC</code>NPN 共射極固定壓降模型：VBE=0.7 V、VCE(sat)=0.2 V。β 固定，可用旋鈕改變。忽略漏電、溫度、Early effect 與開關暫態；可理解區域，不用於實際設計定值。<a href="https://www.onsemi.com/pdf/datasheet/2n3904-d.pdf" target="_blank" rel="noopener">對照真實元件：onsemi 2N3904 資料表 ↗</a>';
+function syncControls() {
+  for (const c of lesson.controls) {
+    const el = document.getElementById(`k-${c.key}`); if (!el) continue;
+    if (c.type === 'range') { el.value = toPos(c, values[c.key]); document.getElementById(`o-${c.key}`).textContent = c.format(values[c.key]); }
+    else el.value = String(values[c.key]);
   }
-  $('insight-title').textContent=wiring.valid?title:'先把電路接起來。';$('insight-text').textContent=wiring.valid?text:'點選兩個接點就能接線。點選電線可以拆掉；如果卡住，先看提示。接好後才會產生模擬輸出。';$('theory').innerHTML=theory.replace(/\n/g,'<br>');
 }
-function plot(){
-  const svg=$('scope');svg.replaceChildren();const id=lessons[active].id;let horizon=id==='rc'?Math.max(5*tau(values.r*1000,values.c*1e-6),2):id==='filter'?4/(values.ratio/(2*Math.PI*values.r*1000*values.c*1e-6)):6;
-  const start=Math.max(0,t-horizon),end=start+horizon;const bipolar=id==='filter';let ymax=Math.max(values.supply||values.vcc,Math.abs(voltage),1)*1.15,ymin=bipolar?-ymax:0;
-  const x=v=>52+(v-start)/horizon*647,y=v=>192-(v-ymin)/(ymax-ymin)*160;
-  for(let i=0;i<=4;i++){let yy=32+i*40;svg.append(el('line',{x1:52,y1:yy,x2:699,y2:yy,class:'scope-grid'}),el('text',{x:42,y:yy+4,'text-anchor':'end',class:'scope-label'},fmt(ymax-i*(ymax-ymin)/4,1)));}
-  for(let i=0;i<=4;i++){const xx=52+i*647/4;svg.append(el('line',{x1:xx,y1:32,x2:xx,y2:192,class:'scope-grid'}),el('text',{x:xx,y:212,'text-anchor':i===4?'end':'middle',class:'scope-label'},`${fmt(start+i*horizon/4,2)} s`));}
-  svg.append(el('text',{x:16,y:18,class:'scope-label'},'V'));
-  const data=samples.filter(s=>s.t>=start&&s.t<=end);for(const [key,cls] of [['input','input-line'],['output','output-line']]){if(data.length>1)svg.append(el('path',{d:data.map((s,i)=>`${i?'L':'M'}${x(s.t).toFixed(2)},${y(s[key]).toFixed(2)}`).join(' '),class:cls}));}
-  if(!wiring.valid||data.length<2)svg.append(el('text',{x:375,y:112,'text-anchor':'middle',class:'scope-label'},!wiring.valid?'接好電路後，才會有波形。':'按「開始實驗」，觀察輸入與輸出。'));
-  $('scope-title').textContent=id==='diode'?'示波器 · 電阻後節點':id==='bjt'?'示波器 · Vin / VCE':'示波器 · Vin / VC';
+function applyPreset(preset) {
+  Object.assign(values, preset);
+  if (lesson.timeBased) { stopSim(); simState = lesson.timeBased.init(values); updateTransport(); }
+  syncControls(); renderDynamic();
 }
-function observe(){
-  if(!running||!wiring.valid)return;const id=lessons[active].id;
-  if(id==='rc'){const target=tau(values.r*1000,values.c*1e-6);if(target>=.9&&target<=1.1){if(values.mode==='charge'&&voltage>=values.supply*.9)seen.charged=true;if(seen.charged&&values.mode==='discharge'&&voltage<=values.supply*.2)complete();}}
-  if(id==='filter'){seen[values.ratio]=true;if(seen[.1]&&seen[10])complete();}
-  if(id==='diode'&&Math.abs(values.supply-5)<.01&&Math.abs(values.r-1)<.01){seen[diode().conducting?'forward':'reverse']=true;if(seen.forward&&seen.reverse)complete();}
-  if(id==='bjt'){seen[bjt().state]=true;if(seen.cutoff&&seen.saturation)complete();}
+
+// ---------- 動態區：電路圖、讀數、圖表、步驟 ----------
+function renderDynamic() {
+  const r = lesson.compute(values, simState);
+  $('#schematic').innerHTML = lesson.schematic(values, r, simState);
+  $('#chart').innerHTML = lesson.chart(values, r, simState);
+  $('#caption').textContent = lesson.caption(values, r, simState);
+  $('#readouts').innerHTML = lesson.readouts(values, r, simState).map(x => `<div class="readout${x.warn ? ' warn' : ''}"><small>${esc(x.label)}</small><strong>${esc(x.value)}</strong>${x.note ? `<em>${esc(x.note)}</em>` : ''}</div>`).join('');
+  // 檢查目前步驟
+  const step = lesson.steps[stepIndex];
+  const p = lessonProgress(lesson.id);
+  let justDone = false;
+  if (step && !p.steps.includes(stepIndex) && safeCheck(step, r)) { p.steps.push(stepIndex); save(); justDone = true; revealed = true; renderNav(); }
+  renderStep(r, justDone);
 }
-function tick(now){
-  const dt=lastTime===null?0:Math.min((now-lastTime)/1000,.1);lastTime=now;
-  if(running&&wiring.valid){const id=lessons[active].id;let step=dt, input=0,output=0;
-    if(id==='rc'){step*=values.speed;input=values.mode==='charge'?values.supply:0;voltage=rcStep(voltage,input,values.r*1000,values.c*1e-6,step);output=voltage;}
-    else if(id==='filter'){const frequency=values.ratio/(2*Math.PI*values.r*1000*values.c*1e-6);step=dt*(4/frequency)/8;voltage=rcSineStep(voltage,values.supply,frequency,values.r*1000,values.c*1e-6,t,step);input=values.supply*Math.sin(2*Math.PI*frequency*(t+step));output=voltage;}
-    else if(id==='diode'){input=values.supply;output=diode().voltage;}else{input=values.vin;output=bjt().vce;}
-    if(step>0){t+=step;samples.push({t,input,output});if(samples.length>2400)samples.shift();metrics();plot();observe();}
-  }
-  requestAnimationFrame(tick);
+function safeCheck(step, r) { try { return !!step.check(values, r, simState); } catch { return false; } }
+
+let stepSignature = '';
+function renderStep(r, justDone) {
+  const p = lessonProgress(lesson.id);
+  const step = lesson.steps[stepIndex];
+  const done = p.steps.includes(stepIndex);
+  const allDone = p.steps.length === lesson.steps.length;
+  // 動畫每一幀都會呼叫這裡；內容沒變就不要重建 DOM，否則按鈕會被拔掉
+  const signature = `${lesson.id}|${stepIndex}|${done}|${revealed}|${allDone}|${p.steps.length}`;
+  if (signature === stepSignature && !justDone) return;
+  stepSignature = signature;
+  const dots = lesson.steps.map((s, i) => `<button class="dot${i === stepIndex ? ' current' : ''}${p.steps.includes(i) ? ' done' : ''}" data-i="${i}" aria-label="步驟 ${i + 1}">${p.steps.includes(i) ? '✓' : i + 1}</button>`).join('');
+  $('#step-card').innerHTML = `
+    <div class="step-top"><div class="eyebrow">導引步驟 ${stepIndex + 1} / ${lesson.steps.length}</div><div class="dots">${dots}</div></div>
+    <h3>${esc(step.title)}</h3>
+    <div class="step-do"><span class="tag">做什麼</span><p>${step.do}</p>${step.preset ? `<button id="preset" class="btn small">幫我設定</button>` : ''}</div>
+    <div class="step-status ${done ? 'ok' : ''}">${done ? '✓ 條件達成' : '○ 還沒達成條件 · 調整旋鈕試試'}</div>
+    ${done || revealed ? `<div class="step-see"><span class="tag see">你會看到</span><p>${step.see}</p></div><div class="step-why"><span class="tag why">為什麼</span><p>${step.why}</p></div>` : `<button id="reveal" class="link">先看解說，不做也可以 →</button>`}
+    <div class="step-nav">
+      <button id="prev-step" class="btn small" ${stepIndex === 0 ? 'disabled' : ''}>← 上一步</button>
+      ${stepIndex < lesson.steps.length - 1 ? `<button id="next-step" class="btn small ${done ? 'primary' : ''}">下一步 →</button>` : `<a class="btn small ${allDone ? 'primary' : ''}" href="#quiz">去做自我檢測 →</a>`}
+    </div>
+    ${allDone ? '<div class="step-complete">🎉 這課的實驗步驤全部完成！</div>' : ''}`;
+  $('#step-card').querySelectorAll('.dot').forEach(b => b.onclick = () => gotoStep(+b.dataset.i));
+  const pb = $('#preset'); if (pb) pb.onclick = () => applyPreset(step.preset);
+  const rv = $('#reveal'); if (rv) rv.onclick = () => { revealed = true; renderStep(r, false); };
+  const prev = $('#prev-step'); if (prev) prev.onclick = () => gotoStep(stepIndex - 1);
+  const next = $('#next-step'); if (next) next.onclick = () => gotoStep(stepIndex + 1);
+  if (justDone) $('#step-card').classList.add('flash'), setTimeout(() => $('#step-card')?.classList.remove('flash'), 900);
 }
-function update(){status();metrics();insight();plot();}
-$('run').onclick=()=>{running=!running;lastTime=null;status();board();};
-$('restart').onclick=()=>{running=false;t=0;voltage=0;samples=[];seen={};lastTime=null;update();board();};
-$('clear').onclick=()=>{wires=[];selected=null;samples=[];validate();board();update();};
-$('undo').onclick=()=>{wires.pop();selected=null;samples=[];validate();board();update();};
-$('example').onclick=()=>{wires=(lessons[active].id==='bjt'?transistorWires:seriesWires).map(pair=>[...pair]);selected=null;validate();board();update();};
-$('hint').onclick=()=>{$('hint-text').hidden=false;$('hint-text').textContent=hintCount++===0?(lessons[active].id==='bjt'?'先分清兩條路：控制訊號經 RB 進入 B；負載經 RC 接到 C。它們在 E 的接地端會合。':'沿著電流的路徑想：從電源出發，經過電阻與元件，最後回到另一端。'):lessons[active].hint;};
-$('reset-progress').onclick=()=>{if(confirm('要清除這台裝置的四個實驗完成紀錄嗎？')){completed.clear();saveProgress();navigation();}};
-loadLesson(0);requestAnimationFrame(tick);
+function gotoStep(i) {
+  stepIndex = Math.max(0, Math.min(lesson.steps.length - 1, i));
+  revealed = lessonProgress(lesson.id).steps.includes(stepIndex);
+  renderDynamic();
+}
+
+// ---------- 測驗 ----------
+function renderQuiz() {
+  const p = lessonProgress(lesson.id);
+  $('#quiz-list').innerHTML = lesson.quiz.map((q, qi) => {
+    const chosen = p.quiz[qi];
+    const answered = chosen !== undefined;
+    return `<div class="quiz-item${answered ? (chosen === q.answer ? ' right' : ' wrong') : ''}">
+      <div class="quiz-q"><span class="qnum">Q${qi + 1}</span>${esc(q.q)}</div>
+      <div class="quiz-opts">${q.options.map((o, oi) => `<button class="opt${answered && oi === q.answer ? ' correct' : ''}${answered && oi === chosen && chosen !== q.answer ? ' chosen-wrong' : ''}" data-q="${qi}" data-o="${oi}" ${answered ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
+      ${answered ? `<div class="quiz-explain">${chosen === q.answer ? '<strong>答對了。</strong>' : `<strong>不對，正確答案是「${esc(q.options[q.answer])}」。</strong>`} ${esc(q.explain)}</div>` : ''}
+    </div>`;
+  }).join('') + quizFooter();
+  $('#quiz-list').querySelectorAll('.opt').forEach(b => b.onclick = () => { p.quiz[b.dataset.q] = +b.dataset.o; save(); renderQuiz(); renderNav(); });
+  const retry = $('#quiz-retry'); if (retry) retry.onclick = () => { p.quiz = {}; save(); renderQuiz(); renderNav(); };
+}
+function quizFooter() {
+  const s = lessonStatus(lesson);
+  if (s.answered < s.quizTotal) return `<p class="quiz-score">已回答 ${s.answered} / ${s.quizTotal} 題</p>`;
+  return `<p class="quiz-score">答對 ${s.correct} / ${s.quizTotal} 題。${s.correct === s.quizTotal ? '全對，可以放心進下一課。' : '建議回頭看一下答錯的概念段落。'} <button id="quiz-retry" class="link">重做測驗</button></p>`;
+}
+
+// ---------- 其他 ----------
+$('#reset-progress').onclick = () => {
+  if (confirm('要清除這台裝置上所有課程的進度嗎？')) { progress = {}; save(); route(); }
+};
+$('#menu-toggle').onclick = () => document.body.classList.toggle('nav-open');
+$('#nav').addEventListener('click', e => { if (e.target.closest('a')) document.body.classList.remove('nav-open'); });
+
+route();
