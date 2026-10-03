@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {rcStep,rcSineStep,filterResponse,diodeModel,bjtModel,checkWiring,seriesWires,transistorWires} from '../physics.js';
+const close=(actual,expected,epsilon=1e-9)=>assert.ok(Math.abs(actual-expected)<epsilon,`${actual} != ${expected}`);
+test('RC reaches 63.2% at one time constant and discharges to 36.8%',()=>{close(rcStep(0,5,10000,100e-6,1),5*(1-Math.exp(-1)));close(rcStep(5,0,10000,100e-6,1),5*Math.exp(-1));});
+test('RC step preserves state and has the same result across time subdivision',()=>{close(rcStep(3,0,10000,100e-6,0),3);let value=0;for(let i=0;i<100;i++)value=rcStep(value,5,10000,100e-6,.01);close(value,rcStep(0,5,10000,100e-6,1));});
+test('filter gain and phase at cutoff',()=>{const a=filterResponse(10000,100e-6,1/(2*Math.PI));close(a.gain,1/Math.sqrt(2));close(a.phase,-45);close(a.cutoff,1/(2*Math.PI));});
+test('sinusoidal RC interval solution is independent of timestep subdivision',()=>{let value=1.2;for(let i=0;i<100;i++)value=rcSineStep(value,5,2,10000,100e-6,i*.01,.01);close(value,rcSineStep(1.2,5,2,10000,100e-6,0,1));});
+test('diode forward and reverse behavior',()=>{close(diodeModel(5,1000).current,.0043);assert.equal(diodeModel(5,1000,true).current,0);close(diodeModel(.4,1000).voltage,.4);assert.equal(diodeModel(.4,1000).conducting,false);});
+test('BJT cutoff, active and load-limited saturation',()=>{assert.equal(bjtModel(5,0,47000,1000).state,'cutoff');const active=bjtModel(5,1,47000,1000);assert.equal(active.state,'active');close(active.ic,100*.3/47000);const sat=bjtModel(5,5,1000,1000);assert.equal(sat.state,'saturation');close(sat.ic,.0048);close(sat.vce,.2);});
+test('wiring accepts only supported full circuits and equivalent resistor orientations',()=>{assert.equal(checkWiring('rc',seriesWires).valid,true);assert.equal(checkWiring('bjt',transistorWires).valid,true);assert.equal(checkWiring('rc',seriesWires.map(p=>p.map(id=>id==='r1'?'r2':id==='r2'?'r1':id))).valid,true);assert.equal(checkWiring('rc',seriesWires.slice(0,2)).valid,false);});
+test('shorts and unsupported topology never produce valid outputs',()=>{assert.equal(checkWiring('rc',[...seriesWires,['p','n']]).valid,false);assert.equal(checkWiring('rc',[...seriesWires,['r1','r2']]).valid,false);assert.equal(checkWiring('bjt',[...transistorWires,['qb','qc']]).valid,false);assert.equal(checkWiring('rc',[['missing','p']]).valid,false);});
+test('diode reverse wiring is recognized separately',()=>{const reversed=[['p','r1'],['r2','x2'],['x1','n']];assert.equal(checkWiring('diode',reversed).valid,true);assert.equal(checkWiring('diode',reversed).reversed,true);assert.equal(checkWiring('rc',reversed).valid,false);});

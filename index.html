@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#142621">
+  <title>Basic EE · 電子實驗室</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="./"><span class="brand-icon">∿</span><span>basic <b>EE</b><small>電子實驗室</small></span></a><span class="header-note">接起來，看看會發生什麼。</span><button id="reset-progress" class="text-button">重設學習進度</button></header>
+  <main>
+    <aside class="sidebar"><div class="eyebrow">你的實驗手冊</div><h1>從「變化」<br>開始理解電路。</h1><p class="intro">電容、訊號、二極體、電晶體。<br>先動手，再把原理串起來。</p><nav id="lessons" aria-label="實驗選擇"></nav><div class="progress-card"><span id="progress-label">0 / 4 個實驗完成</span><div class="progress-track"><i id="progress-bar"></i></div><small>進度自動存在這台裝置</small></div><p class="sidebar-footer">虛擬電路 · 可以放心試錯<br>教學模型的假設寫在每個實驗裡。</p></aside>
+    <section class="workspace">
+      <div class="lesson-heading"><div><div id="lesson-tag" class="eyebrow"></div><h2 id="lesson-title"></h2><p id="lesson-subtitle"></p></div><span class="chapter-mark" id="chapter-mark"></span></div>
+      <div class="mission"><span class="mission-icon">◎</span><div><div class="eyebrow">這次的挑戰</div><p id="mission-text"></p></div><span id="mission-status" class="pill">還沒完成</span></div>
+      <div class="lab-grid">
+        <section class="panel circuit-panel"><div class="panel-head"><h3>接線工作桌</h3><div><button id="undo" class="text-button">撤回</button><button id="clear" class="text-button">清空</button></div></div><div class="board-wrap"><svg id="board" viewBox="0 0 640 330" role="group" aria-label="互動電路工作桌"></svg></div><div id="wiring-status" class="status" role="status"></div><div class="board-actions"><button id="hint" class="secondary">給我一點提示</button><button id="example" class="text-button">接好示範電路</button></div><div id="hint-text" class="hint" hidden></div></section>
+        <section class="panel controls-panel"><div class="panel-head"><h3>實驗旋鈕</h3><span class="small-label">即時更新</span></div><div id="controls"></div><div class="transport"><button id="run" class="primary">▶ 開始實驗</button><button id="restart" class="secondary">↺ 重來</button></div><p id="control-note" class="fine-print"></p></section>
+        <section class="panel scope-panel"><div class="panel-head"><h3 id="scope-title">示波器</h3><div class="legend"><span><i class="input-dot"></i>輸入</span><span><i class="output-dot"></i>輸出</span></div></div><svg id="scope" viewBox="0 0 720 230" role="img" aria-label="輸入與輸出電壓隨時間變化"></svg><div id="readouts" class="readouts"></div></section>
+        <section class="panel insight-panel"><div class="eyebrow">正在發生的事</div><h3 id="insight-title"></h3><p id="insight-text"></p><details><summary>展開公式與模型假設</summary><div id="theory"></div></details></section>
+      </div>
+      <footer class="workspace-footer">Basic EE / 01 <span>每次只改一件事，再觀察差異。</span></footer>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
